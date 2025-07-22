@@ -1,0 +1,121 @@
+import requests
+import re
+import os
+import json
+import time
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse
+from tqdm import tqdm
+
+# Encabezado de User-Agent para evitar bloqueos
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.96 Safari/537.36"
+}
+
+# Directorios de salida
+OUTDIR_DOWNLOAD = "/sdcard/Download/linkmod2"
+OUTDIR_TERMUX = "/data/data/com.termux/files/home/linkmod2"
+
+os.makedirs(OUTDIR_DOWNLOAD, exist_ok=True)
+os.makedirs(OUTDIR_TERMUX, exist_ok=True)
+
+# Rutas de archivos de salida
+TXT_OUT_DOWNLOAD = os.path.join(OUTDIR_DOWNLOAD, "catalogo_juegos.txt")
+JSON_OUT_DOWNLOAD = os.path.join(OUTDIR_DOWNLOAD, "catalogo_juegos.json")
+STATE_OUT_DOWNLOAD = os.path.join(OUTDIR_DOWNLOAD, "progress_state.json")
+
+TXT_OUT_TERMUX = os.path.join(OUTDIR_TERMUX, "catalogo_juegos.txt")
+JSON_OUT_TERMUX = os.path.join(OUTDIR_TERMUX, "catalogo_juegos.json")
+STATE_OUT_TERMUX = os.path.join(OUTDIR_TERMUX, "progress_state.json")
+
+# Estado global
+VISITED = set()
+RESULTS = []
+
+def print_banner():
+    print("""
+    ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+    ┃   🕷️ MEDIAFIRE LINK CRAWLER   ┃
+    ┃   🌐 Termux + Descargas APK   ┃
+    ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+    """)
+
+def soup_of(url):
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=10)
+        if res.status_code == 200:
+            return BeautifulSoup(res.text, "html.parser")
+    except:
+        pass
+    return None
+
+def find_mediafire_links(soup, base_url):
+    links = []
+    for a in soup.find_all("a", href=True):
+        href = urljoin(base_url, a["href"])
+        if "mediafire.com" in href:
+            links.append(href)
+    return links
+
+def save_partial_state():
+    data_json = [{"title": t, "link": l} for t, l in RESULTS]
+    for outdir, txt_out, json_out, state_out in zip(
+        [OUTDIR_DOWNLOAD, OUTDIR_TERMUX],
+        [TXT_OUT_DOWNLOAD, TXT_OUT_TERMUX],
+        [JSON_OUT_DOWNLOAD, JSON_OUT_TERMUX],
+        [STATE_OUT_DOWNLOAD, STATE_OUT_TERMUX],
+    ):
+        with open(txt_out, "w", encoding="utf-8") as f:
+            for t, l in RESULTS:
+                f.write(f"{t}\n{l}\n\n")
+        with open(json_out, "w", encoding="utf-8") as fjson:
+            json.dump(data_json, fjson, ensure_ascii=False, indent=4)
+        with open(state_out, "w", encoding="utf-8") as fstate:
+            json.dump({"visited": list(VISITED), "results": RESULTS}, fstate, ensure_ascii=False)
+
+def crawl(url_base, url_actual):
+    if url_actual in VISITED or not url_actual.startswith(url_base):
+        return
+    VISITED.add(url_actual)
+
+    soup = soup_of(url_actual)
+    if not soup:
+        return
+
+    # Buscar enlaces Mediafire
+    mediafire_links = find_mediafire_links(soup, url_actual)
+    if mediafire_links:
+        title = soup.title.string.strip() if soup.title else url_actual
+        for link in mediafire_links:
+            RESULTS.append((title, link))
+            print(f"\n✅ {title[:40]} -> {link}")
+        if len(RESULTS) % 20 == 0:
+            save_partial_state()
+
+    # Recorrer recursivamente los demás enlaces
+    for a in soup.find_all("a", href=True):
+        next_url = urljoin(url_actual, a["href"])
+        if url_base in next_url and next_url not in VISITED:
+            crawl(url_base, next_url)
+
+def save_final():
+    save_partial_state()
+    print(f"""
+✅ Guardado final:
+ - TXT (Download): {TXT_OUT_DOWNLOAD}
+ - JSON (Download): {JSON_OUT_DOWNLOAD}
+ - Estado (Download): {STATE_OUT_DOWNLOAD}
+ - TXT (Termux): {TXT_OUT_TERMUX}
+ - JSON (Termux): {JSON_OUT_TERMUX}
+ - Estado (Termux): {STATE_OUT_TERMUX}
+""")
+
+if __name__ == "__main__":
+    print_banner()
+    base_url = input("🌐 Ingresa la URL base (ej: https://espacioapk.com/): ").strip()
+    print(f"\n🔍 Escaneando el sitio: {base_url}...\n")
+    with tqdm(total=1, desc="⏳ Iniciando", unit="sitio") as pbar:
+        crawl(base_url, base_url)
+        pbar.update(1)
+    save_final()
+    print(f"\n🎉 Enlaces Mediafire encontrados: {len(RESULTS)}")
